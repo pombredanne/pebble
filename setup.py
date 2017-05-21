@@ -1,11 +1,6 @@
 import os
-from setuptools import setup
-
-
-# Utility function to read the README file.
-# Used for the long_description.  It's nice, because now 1) we have a top level
-# README file and 2) it's easier to type in the README file than to put a raw
-# string in below ...
+import sys
+from setuptools import setup, find_packages
 
 
 def read(fname):
@@ -14,15 +9,16 @@ def read(fname):
 
 setup(
     name="Pebble",
-    version="3.1.6",
+    version="4.1.1",
     author="Matteo Cafasso",
     author_email="noxdafox@gmail.com",
     description=("Threading and multiprocessing eye-candy."),
     license="LGPL",
     keywords="thread process pool decorator",
     url="https://github.com/noxdafox/pebble",
-    packages=['pebble', 'pebble.process', 'pebble.thread', 'tests'],
-    long_description=read('README.txt'),
+    packages=find_packages(exclude=["tests"]),
+    extras_require={":python_version<'3'": ["futures"]},
+    long_description=read('README.rst'),
     classifiers=[
         "Programming Language :: Python",
         "Programming Language :: Python :: 3",
