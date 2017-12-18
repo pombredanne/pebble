@@ -16,8 +16,9 @@
 import os
 import time
 
-from itertools import chain, count
+from itertools import count
 from collections import namedtuple
+from multiprocessing import cpu_count
 from signal import SIG_IGN, SIGINT, signal
 from concurrent.futures import CancelledError, TimeoutError
 try:
@@ -27,12 +28,13 @@ except ImportError:
         pass
 
 from pebble.pool.channel import ChannelError, channels
-from pebble.pool.base_pool import MapResults, map_function
 from pebble.pool.base_pool import ERROR, RUNNING, SLEEP_UNIT
-from pebble.pool.base_pool import BasePool, Task, TaskPayload, run_initializer
+from pebble.pool.base_pool import BasePool, Task, TaskPayload
+from pebble.pool.base_pool import ProcessMapFuture, MapResults
+from pebble.pool.base_pool import iter_chunks, run_initializer
 from pebble.common import launch_process, stop_process
 from pebble.common import ProcessExpired, ProcessFuture
-from pebble.common import execute, launch_thread, send_result
+from pebble.common import process_execute, launch_thread, send_result
 
 
 class ProcessPool(BasePool):
@@ -47,7 +49,7 @@ class ProcessPool(BasePool):
     every time a worker is started, receiving initargs as arguments.
 
     """
-    def __init__(self, max_workers=1, max_tasks=0,
+    def __init__(self, max_workers=cpu_count(), max_tasks=0,
                  initializer=None, initargs=()):
         super(ProcessPool, self).__init__(
             max_workers, max_tasks, initializer, initargs)
@@ -75,7 +77,8 @@ class ProcessPool(BasePool):
         *timeout* is an integer, if expires the task will be terminated
         and *Future.result()* will raise *TimeoutError*.
 
-        A *concurrent.futures.Future* object is returned.
+        A *pebble.ProcessFuture* object is returned.
+
         """
         self._check_pool_state()
 
@@ -88,32 +91,45 @@ class ProcessPool(BasePool):
         return future
 
     def map(self, function, *iterables, **kwargs):
-        """Returns an iterator equivalent to map(function, iterables).
+        """Computes the *function* using arguments from
+        each of the iterables. Stops when the shortest iterable is exhausted.
 
         *timeout* is an integer, if expires the task will be terminated
         and the call to next will raise *TimeoutError*.
+        The *timeout* is applied to each chunk of the iterable.
 
         *chunksize* controls the size of the chunks the iterable will
-        be broken into before being passed to the function. If None
-        the size will be controlled by the Pool.
+        be broken into before being passed to the function.
+
+        A *pebble.ProcessFuture* object is returned.
 
         """
         self._check_pool_state()
 
-        iterables = tuple(zip(*iterables))
-        timeout = kwargs.get('timeout', 0)
-        chunksize = kwargs.get('chunksize')
+        timeout = kwargs.get('timeout')
+        chunksize = kwargs.get('chunksize', 1)
 
-        if chunksize is None:
-            chunksize = sum(divmod(len(iterables), self._context.workers * 4))
-        elif chunksize < 1:
+        if chunksize < 1:
             raise ValueError("chunksize must be >= 1")
 
         futures = [self.schedule(
-            map_function, args=(function, chunk), timeout=timeout*len(chunk))
-                   for chunk in zip(*[iter(iterables)] * chunksize)]
+            process_chunk, args=(function, chunk), timeout=timeout)
+                   for chunk in iter_chunks(chunksize, *iterables)]
 
-        return chain(MapResults(futures))
+        map_future = ProcessMapFuture(futures)
+        if not futures:
+            map_future.set_result(MapResults(futures))
+            return map_future
+
+        def done_map(_):
+            if not map_future.done():
+                map_future.set_result(MapResults(futures))
+
+        for future in futures:
+            future.add_done_callback(done_map)
+            setattr(future, 'map_future', map_future)
+
+        return map_future
 
 
 def task_scheduler_loop(pool_manager):
@@ -126,7 +142,7 @@ def task_scheduler_loop(pool_manager):
 
             if task is not None:
                 if task.future.cancelled():
-                    task.future.set_running_or_notify_cancel()
+                    task.set_running_or_notify_cancel()
                     task_queue.task_done()
                 else:
                     pool_manager.schedule(task)
@@ -249,7 +265,7 @@ class TaskManager:
         task = self.tasks[task_id]
         task.worker_id = worker_id
         task.timestamp = time.time()
-        task.future.set_running_or_notify_cancel()
+        task.set_running_or_notify_cancel()
 
     def task_done(self, task_id, result):
         """Set the tasks result and run the callback."""
@@ -259,7 +275,7 @@ class TaskManager:
             return  # result of previously timeout Task
         else:
             if task.future.cancelled():
-                task.future.set_running_or_notify_cancel()
+                task.set_running_or_notify_cancel()
             elif isinstance(result, BaseException):
                 task.future.set_exception(result)
             else:
@@ -366,7 +382,8 @@ def worker_process(params, channel):
     try:
         for task in worker_get_next_task(channel, params.max_tasks):
             payload = task.payload
-            result = execute(payload.function, *payload.args, **payload.kwargs)
+            result = process_execute(
+                payload.function, *payload.args, **payload.kwargs)
             send_result(channel, Result(task.id, result))
     except (EnvironmentError, OSError) as error:
         os._exit(error.errno if error.errno else 1)
@@ -407,6 +424,11 @@ def task_worker_lookup(running_tasks, worker_id):
             return task
 
     raise LookupError("Not found")
+
+
+def process_chunk(function, chunk):
+    """Processes a chunk of the iterable passed to map dealing with errors."""
+    return [process_execute(function, *args) for args in chunk]
 
 
 NoMessage = namedtuple('NoMessage', ())

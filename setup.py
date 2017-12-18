@@ -1,5 +1,4 @@
 import os
-import sys
 from setuptools import setup, find_packages
 
 
@@ -9,7 +8,7 @@ def read(fname):
 
 setup(
     name="Pebble",
-    version="4.1.1",
+    version="4.3.6",
     author="Matteo Cafasso",
     author_email="noxdafox@gmail.com",
     description=("Threading and multiprocessing eye-candy."),
@@ -26,6 +25,7 @@ setup(
         "Intended Audience :: Developers",
         "Operating System :: OS Independent",
         "Topic :: Software Development :: Libraries :: Python Modules",
-        "License :: OSI Approved :: GNU Library or Lesser General Public License (LGPL)"
+        "License :: OSI Approved :: " +
+        "GNU Library or Lesser General Public License (LGPL)"
     ],
 )

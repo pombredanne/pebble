@@ -15,7 +15,7 @@ from pebble import ProcessPool, ProcessExpired
 # set start method
 supported = False
 
-if sys.version_info.major > 2:
+if sys.version_info.major > 2 and sys.version_info.minor > 3:
     methods = multiprocessing.get_all_start_methods()
     if 'fork' in methods:
         try:
@@ -97,7 +97,7 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_single_future(self):
         """Process Pool Fork single future."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(function, args=[1],
                                    kwargs={'keyword_argument': 1})
         self.assertEqual(future.result(), 2)
@@ -105,14 +105,14 @@ class TestProcessPool(unittest.TestCase):
     def test_process_pool_multiple_futures(self):
         """Process Pool Fork multiple futures."""
         futures = []
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             for _ in range(5):
                 futures.append(pool.schedule(function, args=[1]))
         self.assertEqual(sum([f.result() for f in futures]), 5)
 
     def test_process_pool_callback(self):
         """Process Pool Fork result is forwarded to the callback."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(
                 function, args=[1], kwargs={'keyword_argument': 1})
         future.add_done_callback(self.callback)
@@ -121,13 +121,13 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_error(self):
         """Process Pool Fork errors are raised by future get."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(error_function)
         self.assertRaises(Exception, future.result)
 
     def test_process_pool_error_callback(self):
         """Process Pool Fork errors are forwarded to callback."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(error_function)
         future.add_done_callback(self.callback)
         self.event.wait()
@@ -135,13 +135,13 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_timeout(self):
         """Process Pool Fork future raises TimeoutError if so."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(long_function, timeout=0.1)
         self.assertRaises(TimeoutError, future.result)
 
     def test_process_pool_timeout_callback(self):
         """Process Pool Fork TimeoutError is forwarded to callback."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(long_function, timeout=0.1)
         future.add_done_callback(self.callback)
         self.event.wait()
@@ -149,7 +149,7 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_cancel(self):
         """Process Pool Fork future raises CancelledError if so."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(long_function)
             time.sleep(0.1)  # let the process pick up the task
             self.assertTrue(future.cancel())
@@ -157,7 +157,7 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_cancel_callback(self):
         """Process Pool Fork CancelledError is forwarded to callback."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(long_function)
             future.add_done_callback(self.callback)
             time.sleep(0.1)  # let the process pick up the task
@@ -176,14 +176,14 @@ class TestProcessPool(unittest.TestCase):
     def test_process_pool_future_limit(self):
         """Process Pool Fork tasks limit is honored."""
         futures = []
-        with ProcessPool(max_tasks=2) as pool:
+        with ProcessPool(max_workers=1, max_tasks=2) as pool:
             for _ in range(0, 4):
                 futures.append(pool.schedule(pid_function))
         self.assertEqual(len(set([f.result() for f in futures])), 2)
 
     def test_process_pool_stop_timeout(self):
         """Process Pool Fork workers are stopped if future timeout."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future1 = pool.schedule(pid_function)
             pool.schedule(long_function, timeout=0.1)
             future2 = pool.schedule(pid_function)
@@ -191,7 +191,7 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_stop_cancel(self):
         """Process Pool Fork workers are stopped if future is cancelled."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future1 = pool.schedule(pid_function)
             cancel_future = pool.schedule(long_function)
             time.sleep(0.1)  # let the process pick up the task
@@ -215,20 +215,20 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_running(self):
         """Process Pool Fork is active if a future is scheduled."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             pool.schedule(function, args=[1])
             self.assertTrue(pool.active)
 
     def test_process_pool_stopped(self):
         """Process Pool Fork is not active once stopped."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             pool.schedule(function, args=[1])
         self.assertFalse(pool.active)
 
     def test_process_pool_close_futures(self):
         """Process Pool Fork all futures are performed on close."""
         futures = []
-        pool = ProcessPool()
+        pool = ProcessPool(max_workers=1)
         for index in range(10):
             futures.append(pool.schedule(function, args=[index]))
         pool.close()
@@ -237,7 +237,7 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_close_stopped(self):
         """Process Pool Fork is stopped after close."""
-        pool = ProcessPool()
+        pool = ProcessPool(max_workers=1)
         pool.schedule(function, args=[1])
         pool.close()
         pool.join()
@@ -246,7 +246,7 @@ class TestProcessPool(unittest.TestCase):
     def test_process_pool_stop_futures(self):
         """Process Pool Fork not all futures are performed on stop."""
         futures = []
-        pool = ProcessPool()
+        pool = ProcessPool(max_workers=1)
         for index in range(10):
             futures.append(pool.schedule(function, args=[index]))
         pool.stop()
@@ -255,16 +255,41 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_stop_stopped(self):
         """Process Pool Fork is stopped after stop."""
-        pool = ProcessPool()
+        pool = ProcessPool(max_workers=1)
         pool.schedule(function, args=[1])
         pool.stop()
         pool.join()
         self.assertFalse(pool.active)
 
+    def test_process_pool_stop_stopped_callback(self):
+        """Process Pool Fork is stopped in callback."""
+        with ProcessPool(max_workers=1) as pool:
+            def stop_pool_callback(_):
+                pool.stop()
+
+            future = pool.schedule(function, args=[1])
+            future.add_done_callback(stop_pool_callback)
+            with self.assertRaises(RuntimeError):
+                for index in range(10):
+                    time.sleep(0.1)
+                    pool.schedule(long_function, args=[index])
+
+        self.assertFalse(pool.active)
+
+    def test_process_pool_large_data(self):
+        """Process Pool Fork large data is sent on the channel."""
+        data = "a" * 1098 * 1024 * 50  # 50 Mb
+
+        with ProcessPool(max_workers=1) as pool:
+            future = pool.schedule(
+                function, args=[data], kwargs={'keyword_argument': ''})
+
+        self.assertEqual(data, future.result())
+
     def test_process_pool_stop_large_data(self):
         """Process Pool Fork is stopped if large data is sent on the channel."""
-        data = "a" * 4098 * 1024
-        pool = ProcessPool(initializer=long_initializer)
+        data = "a" * 1098 * 1024 * 50  # 50 Mb
+        pool = ProcessPool(max_workers=1)
         pool.schedule(function, args=[data])
         pool.stop()
         pool.join()
@@ -281,13 +306,13 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_join_running(self):
         """Process Pool Fork RuntimeError is raised if active pool joined."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             pool.schedule(function, args=[1])
             self.assertRaises(RuntimeError, pool.join)
 
     def test_process_pool_join_futures_timeout(self):
         """Process Pool Fork TimeoutError is raised if join on long futures."""
-        pool = ProcessPool()
+        pool = ProcessPool(max_workers=1)
         for _ in range(2):
             pool.schedule(long_function)
         pool.close()
@@ -297,7 +322,7 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_callback_error(self):
         """Process Pool Fork does not stop if error in callback."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(function, args=[1],
                                    kwargs={'keyword_argument': 1})
             future.add_done_callback(self.callback)
@@ -308,7 +333,7 @@ class TestProcessPool(unittest.TestCase):
 
     def test_process_pool_exception_isolated(self):
         """Process Pool Fork an Exception does not affect other futures."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(error_function)
             try:
                 future.result()
@@ -321,14 +346,14 @@ class TestProcessPool(unittest.TestCase):
     @unittest.skipIf(os.name == 'nt', "Test won't run on Windows'.")
     def test_process_pool_ignoring_sigterm(self):
         """Process Pool Fork ignored SIGTERM signal are handled on Unix."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(sigterm_function, timeout=0.2)
             with self.assertRaises(TimeoutError):
                 future.result()
 
     def test_process_pool_expired_worker(self):
         """Process Pool Fork unexpect death of worker raises ProcessExpired."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             future = pool.schedule(suicide_function)
             self.assertRaises(ProcessExpired, future.result)
 
@@ -336,45 +361,50 @@ class TestProcessPool(unittest.TestCase):
         """Process Pool Fork map simple."""
         elements = [1, 2, 3]
 
-        with ProcessPool() as pool:
-            generator = pool.map(function, elements)
+        with ProcessPool(max_workers=1) as pool:
+            future = pool.map(function, elements)
+            generator = future.result()
             self.assertEqual(list(generator), elements)
 
     def test_process_pool_map_empty(self):
         """Process Pool Fork map no elements."""
         elements = []
 
-        with ProcessPool() as pool:
-            generator = pool.map(function, elements)
+        with ProcessPool(max_workers=1) as pool:
+            future = pool.map(function, elements)
+            generator = future.result()
             self.assertEqual(list(generator), elements)
 
     def test_process_pool_map_single(self):
         """Process Pool Fork map one element."""
         elements = [0]
 
-        with ProcessPool() as pool:
-            generator = pool.map(function, elements)
+        with ProcessPool(max_workers=1) as pool:
+            future = pool.map(function, elements)
+            generator = future.result()
             self.assertEqual(list(generator), elements)
 
     def test_process_pool_map_multi(self):
         """Process Pool Fork map multiple iterables."""
         expected = (2, 4)
 
-        with ProcessPool() as pool:
-            generator = pool.map(function, (1, 2, 3), (1, 2))
+        with ProcessPool(max_workers=1) as pool:
+            future = pool.map(function, (1, 2, 3), (1, 2))
+            generator = future.result()
             self.assertEqual(tuple(generator), expected)
 
     def test_process_pool_map_one_chunk(self):
         """Process Pool Fork map chunksize 1."""
         elements = [1, 2, 3]
 
-        with ProcessPool() as pool:
-            generator = pool.map(function, elements, chunksize=1)
+        with ProcessPool(max_workers=1) as pool:
+            future = pool.map(function, elements, chunksize=1)
+            generator = future.result()
             self.assertEqual(list(generator), elements)
 
     def test_process_pool_map_zero_chunk(self):
         """Process Pool Fork map chunksize 0."""
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             with self.assertRaises(ValueError):
                 pool.map(function, [], chunksize=0)
 
@@ -383,8 +413,9 @@ class TestProcessPool(unittest.TestCase):
         raised = []
         elements = [1, 2, 3]
 
-        with ProcessPool() as pool:
-            generator = pool.map(long_function, elements, timeout=0.1)
+        with ProcessPool(max_workers=1) as pool:
+            future = pool.map(long_function, elements, timeout=0.1)
+            generator = future.result()
             while True:
                 try:
                     next(generator)
@@ -399,11 +430,11 @@ class TestProcessPool(unittest.TestCase):
         """Process Pool Fork map timeout is assigned per chunk."""
         elements = [0.1]*10
 
-        with ProcessPool() as pool:
+        with ProcessPool(max_workers=1) as pool:
             # it takes 0.5s to process a chunk
-            # the chunk timeout should be 0.2*5s
-            generator = pool.map(
-                long_function, elements, chunksize=5, timeout=0.2)
+            future = pool.map(
+                long_function, elements, chunksize=5, timeout=0.8)
+            generator = future.result()
             self.assertEqual(list(generator), elements)
 
     def test_process_pool_map_error(self):
@@ -411,17 +442,33 @@ class TestProcessPool(unittest.TestCase):
         raised = None
         elements = [1, 'a', 3]
 
-        with ProcessPool() as pool:
-            generator = pool.map(function, elements)
+        with ProcessPool(max_workers=1) as pool:
+            future = pool.map(function, elements)
+            generator = future.result()
             while True:
                 try:
-                    next(generator)
+                    result = next(generator)
                 except TypeError as error:
                     raised = error
                 except StopIteration:
                     break
 
+        self.assertEqual(result, 3)
         self.assertTrue(isinstance(raised, TypeError))
+
+    def test_process_pool_map_cancel(self):
+        """Process Pool Fork cancel iteration."""
+        with ProcessPool(max_workers=1) as pool:
+            future = pool.map(long_function, range(5))
+            generator = future.result()
+
+            self.assertEqual(next(generator), 0)
+
+            future.cancel()
+
+            for _ in range(4):
+                with self.assertRaises(CancelledError):
+                    next(generator)
 
 
 # DEADLOCK TESTS
@@ -457,7 +504,7 @@ class TestProcessPoolDeadlockOnNewFutures(unittest.TestCase):
     def test_pool_deadlock_stop(self):
         """Process Pool Fork reading deadlocks are stopping the Pool."""
         with self.assertRaises(RuntimeError):
-            pool = pebble.ProcessPool()
+            pool = pebble.ProcessPool(max_workers=1)
             for _ in range(10):
                 pool.schedule(function)
                 time.sleep(0.1)
@@ -476,14 +523,14 @@ class TestProcessPoolDeadlockOnResult(unittest.TestCase):
 
     def test_pool_deadlock(self):
         """Process Pool Fork no deadlock if writing worker dies locking channel."""
-        with pebble.ProcessPool() as pool:
+        with pebble.ProcessPool(max_workers=1) as pool:
             with self.assertRaises(pebble.ProcessExpired):
                 pool.schedule(function).result()
 
     def test_pool_deadlock_stop(self):
         """Process Pool Fork writing deadlocks are stopping the Pool."""
         with self.assertRaises(RuntimeError):
-            pool = pebble.ProcessPool()
+            pool = pebble.ProcessPool(max_workers=1)
             for _ in range(10):
                 pool.schedule(function)
                 time.sleep(0.1)

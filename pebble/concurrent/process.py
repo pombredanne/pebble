@@ -27,9 +27,9 @@ except ImportError:
     def get_start_method():
         return 'spawn' if os.name == 'nt' else 'fork'
 
-from pebble.common import launch_process, stop_process
 from pebble.common import ProcessExpired, ProcessFuture
-from pebble.common import execute, launch_thread, send_result
+from pebble.common import launch_process, stop_process, SLEEP_UNIT
+from pebble.common import process_execute, launch_thread, send_result
 
 
 def process(*args, **kwargs):
@@ -113,17 +113,17 @@ def _function_handler(function, args, kwargs, pipe):
     """Runs the actual function in separate process and returns its result."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-    result = execute(function, *args, **kwargs)
+    result = process_execute(function, *args, **kwargs)
 
     send_result(pipe, result)
 
 
 def _get_result(future, pipe, timeout):
     """Waits for result and handles communication errors."""
-    counter = count(step=0.1)
+    counter = count(step=SLEEP_UNIT)
 
     try:
-        while not pipe.poll(0.1):
+        while not pipe.poll(SLEEP_UNIT):
             if timeout is not None and next(counter) >= timeout:
                 return TimeoutError('Task Timeout', timeout)
             elif future.cancelled():
@@ -137,7 +137,7 @@ def _get_result(future, pipe, timeout):
 
 
 ################################################################################
-### Spawn process start method handling logic
+# Spawn process start method handling logic
 ################################################################################
 _registered_functions = {}
 

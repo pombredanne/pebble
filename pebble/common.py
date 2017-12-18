@@ -10,32 +10,15 @@ from multiprocessing import Process
 from concurrent.futures import Future
 
 
-# Borrowed from concurrent.futures
-PENDING = 'PENDING'
-RUNNING = 'RUNNING'
-CANCELLED = 'CANCELLED'
-CANCELLED_AND_NOTIFIED = 'CANCELLED_AND_NOTIFIED'
+class ProcessExpired(OSError):
+    """Raised when process dies unexpectedly."""
+    def __init__(self, msg, code=0):
+        super(ProcessExpired, self).__init__(msg)
+        self.exitcode = code
 
 
-class ProcessFuture(Future):
-    def cancel(self):
-        """Cancel the future.
-
-        Returns True if the future was cancelled, False otherwise. A future
-        cannot be cancelled if it has already completed.
-        """
-        with self._condition:
-            if self._state in (CANCELLED, CANCELLED_AND_NOTIFIED):
-                return True
-
-            self._state = CANCELLED
-            self._condition.notify_all()
-
-        self._invoke_callbacks()
-
-        return True
-
-    # The following methods should only be used by Executors and in tests.
+class PebbleFuture(Future):
+    # Same as base class, removed logline
     def set_running_or_notify_cancel(self):
         """Mark the future as running or process any cancel notifications.
 
@@ -69,15 +52,59 @@ class ProcessFuture(Future):
                 self._state = RUNNING
 
                 return True
-            elif self._state not in (CANCELLED_AND_NOTIFIED, RUNNING):
+            else:
                 raise RuntimeError('Future in unexpected state')
 
 
-class ProcessExpired(OSError):
-    """Raised when process dies unexpectedly."""
-    def __init__(self, msg, code=0):
-        super(ProcessExpired, self).__init__(msg)
-        self.exitcode = code
+class ProcessFuture(PebbleFuture):
+    def cancel(self):
+        """Cancel the future.
+
+        Returns True if the future was cancelled, False otherwise. A future
+        cannot be cancelled if it has already completed.
+        """
+        with self._condition:
+            if self._state == FINISHED:
+                return False
+
+            if self._state in (CANCELLED, CANCELLED_AND_NOTIFIED):
+                return True
+
+            self._state = CANCELLED
+            self._condition.notify_all()
+
+        self._invoke_callbacks()
+
+        return True
+
+
+class RemoteTraceback(Exception):
+    """Traceback wrapper for exceptions in remote process.
+
+    Exception.__cause__ requires a BaseException subclass.
+
+    """
+    def __init__(self, traceback):
+        self.traceback = traceback
+
+    def __str__(self):
+        return self.traceback
+
+
+class RemoteException(object):
+    """Pickling wrapper for exceptions in remote process."""
+    def __init__(self, exception, traceback):
+        self.exception = exception
+        self.traceback = traceback
+
+    def __reduce__(self):
+        return rebuild_exception, (self.exception, self.traceback)
+
+
+def rebuild_exception(exception, traceback):
+    exception.__cause__ = RemoteTraceback(traceback)
+
+    return exception
 
 
 def launch_thread(function, *args, **kwargs):
@@ -121,10 +148,28 @@ def execute(function, *args, **kwargs):
         return error
 
 
+def process_execute(function, *args, **kwargs):
+    """Runs the given function returning its results or exception."""
+    try:
+        return function(*args, **kwargs)
+    except Exception as error:
+        error.traceback = format_exc()
+        return RemoteException(error, error.traceback)
+
+
 def send_result(pipe, data):
-    """Send result handling communication errors."""
+    """Send result handling pickling and communication errors."""
     try:
         pipe.send(data)
     except TypeError as error:
         error.traceback = format_exc()
-        pipe.send(error)
+        pipe.send(RemoteException(error, error.traceback))
+
+
+SLEEP_UNIT = 0.1
+# Borrowed from concurrent.futures
+PENDING = 'PENDING'
+RUNNING = 'RUNNING'
+FINISHED = 'FINISHED'
+CANCELLED = 'CANCELLED'
+CANCELLED_AND_NOTIFIED = 'CANCELLED_AND_NOTIFIED'

@@ -14,17 +14,19 @@
 # along with Pebble.  If not, see <http://www.gnu.org/licenses/>.
 
 import time
+import logging
 
-from traceback import print_exc
-from itertools import chain, count
+from threading import RLock
 from collections import namedtuple
+from itertools import chain, count, islice
 from concurrent.futures import TimeoutError
 try:
     from queue import Queue
 except ImportError:
     from Queue import Queue
 
-from pebble.common import execute, ProcessFuture
+from pebble.common import PebbleFuture, ProcessFuture
+from pebble.common import process_execute, SLEEP_UNIT
 
 
 class BasePool(object):
@@ -57,7 +59,6 @@ class BasePool(object):
     def stop(self):
         """Stops the pool without performing any pending task."""
         self._context.state = STOPPED
-        self._context.task_queue.put(None)
 
     def join(self, timeout=None):
         """Joins the pool waiting until all workers exited.
@@ -72,6 +73,7 @@ class BasePool(object):
             self.stop()
             self.join()
         else:
+            self._context.task_queue.put(None)
             self._stop_pool()
 
     def _wait_queue_depletion(self, timeout):
@@ -108,13 +110,25 @@ class BasePool(object):
         raise NotImplementedError("Not implemented")
 
 
-class PoolContext:
+class PoolContext(object):
     def __init__(self, max_workers, max_tasks, initializer, initargs):
-        self.state = CREATED
+        self._state = CREATED
+        self._state_mutex = RLock()
+
         self.task_queue = Queue()
         self.workers = max_workers
         self.task_counter = count()
         self.worker_parameters = Worker(max_tasks, initializer, initargs)
+
+    @property
+    def state(self):
+        return self._state
+
+    @state.setter
+    def state(self, state):
+        with self._state_mutex:
+            if self.alive:
+                self._state = state
 
     @property
     def alive(self):
@@ -134,56 +148,100 @@ class Task:
     def started(self):
         return bool(self.timestamp > 0)
 
+    def set_running_or_notify_cancel(self):
+        if hasattr(self.future, 'map_future'):
+            if not self.future.map_future.done():
+                try:
+                    self.future.map_future.set_running_or_notify_cancel()
+                except RuntimeError:
+                    pass
 
-def run_initializer(initializer, initargs):
-    try:
-        initializer(*initargs)
-        return True
-    except Exception:
-        print_exc()
-        return False
+        try:
+            self.future.set_running_or_notify_cancel()
+        except RuntimeError:
+            pass
 
 
-def map_function(function, chunk):
-    """Processes a chunk of the iterable passed to map dealing with errors."""
-    return [execute(function, *args) for args in chunk]
+class MapFuture(PebbleFuture):
+    def __init__(self, futures):
+        super(MapFuture, self).__init__()
+        self._futures = futures
+
+    def cancel(self):
+        """Cancel the future.
+
+        Returns True if any of the elements of the iterables is cancelled.
+        False otherwise.
+        """
+        super(MapFuture, self).cancel()
+
+        return any(tuple(f.cancel() for f in self._futures))
+
+
+class ProcessMapFuture(ProcessFuture):
+    def __init__(self, futures):
+        super(ProcessMapFuture, self).__init__()
+        self._futures = futures
+
+    def cancel(self):
+        """Cancel the future.
+
+        Returns True if any of the elements of the iterables is cancelled.
+        False otherwise.
+        """
+        super(ProcessMapFuture, self).cancel()
+
+        return any(tuple(f.cancel() for f in self._futures))
 
 
 class MapResults:
-    def __init__(self, futures):
-        self._current = None
-        self._futures = futures
+    def __init__(self, futures, timeout=None):
+        self._timeout = timeout
+        self._results = chain.from_iterable(chunk_result(f) for f in futures)
 
     def __iter__(self):
         return self
 
     def next(self):
-        result = self._next_result()
+        result = next(self._results)
 
         if isinstance(result, Exception):
             raise result
 
         return result
 
-    def _next_result(self):
-        while True:
-            if self._current is None:
-                try:
-                    future = self._futures.pop(0)
-                    self._current = future.result()
-                except IndexError:
-                    raise StopIteration
-
-            try:
-                return self._current.pop(0)
-            except IndexError:
-                self._current = None
-                continue
-
     __next__ = next
 
 
-SLEEP_UNIT = 0.1
+def iter_chunks(chunksize, *iterables):
+    """Iterates over zipped iterables in chunks."""
+    iterables = iter(zip(*iterables))
+
+    while 1:
+        chunk = tuple(islice(iterables, chunksize))
+
+        if not chunk:
+            return
+
+        yield chunk
+
+
+def chunk_result(future):
+    """Returns the results of a processed chunk."""
+    try:
+        return future.result()
+    except Exception as error:
+        return (error, )
+
+
+def run_initializer(initializer, initargs):
+    """Runs the Pool initializer dealing with errors."""
+    try:
+        initializer(*initargs)
+        return True
+    except Exception as error:
+        logging.exception(error)
+        return False
 
 
 # Pool states

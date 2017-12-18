@@ -15,14 +15,15 @@
 
 
 import time
-from traceback import format_exc
-from itertools import chain, count
+from itertools import count
+from multiprocessing import cpu_count
 from concurrent.futures import Future
 
-from pebble.common import launch_thread
-from pebble.pool.base_pool import MapResults, map_function
+from pebble.common import execute, launch_thread
 from pebble.pool.base_pool import ERROR, RUNNING, SLEEP_UNIT
-from pebble.pool.base_pool import BasePool, Task, TaskPayload, run_initializer
+from pebble.pool.base_pool import MapFuture, MapResults
+from pebble.pool.base_pool import BasePool, Task, TaskPayload
+from pebble.pool.base_pool import iter_chunks, run_initializer
 
 
 class ThreadPool(BasePool):
@@ -37,7 +38,7 @@ class ThreadPool(BasePool):
     every time a worker is started, receiving initargs as arguments.
 
     """
-    def __init__(self, max_workers=1, max_tasks=0,
+    def __init__(self, max_workers=cpu_count(), max_tasks=0,
                  initializer=None, initargs=()):
         super(ThreadPool, self).__init__(
             max_workers, max_tasks, initializer, initargs)
@@ -81,18 +82,29 @@ class ThreadPool(BasePool):
         """
         self._check_pool_state()
 
-        iterables = tuple(zip(*iterables))
-        chunksize = kwargs.get('chunksize')
+        timeout = kwargs.get('timeout')
+        chunksize = kwargs.get('chunksize', 1)
 
-        if chunksize is None:
-            chunksize = sum(divmod(len(iterables), self._context.workers * 4))
-        elif chunksize < 1:
+        if chunksize < 1:
             raise ValueError("chunksize must be >= 1")
 
-        futures = [self.schedule(map_function, args=(function, chunk))
-                   for chunk in zip(*[iter(iterables)] * chunksize)]
+        futures = [self.schedule(process_chunk, args=(function, chunk))
+                   for chunk in iter_chunks(chunksize, *iterables)]
 
-        return chain(MapResults(futures))
+        map_future = MapFuture(futures)
+        if not futures:
+            map_future.set_result(MapResults(futures))
+            return map_future
+
+        def done_map(_):
+            if not map_future.done():
+                map_future.set_result(MapResults(futures, timeout=timeout))
+
+        for future in futures:
+            future.add_done_callback(done_map)
+            setattr(future, 'map_future', map_future)
+
+        return map_future
 
 
 def pool_manager_loop(pool_manager):
@@ -163,7 +175,7 @@ def get_next_task(context, max_tasks):
 
         if task is not None:
             if task.future.cancelled():
-                task.future.set_running_or_notify_cancel()
+                task.set_running_or_notify_cancel()
                 queue.task_done()
             else:
                 yield task
@@ -172,12 +184,16 @@ def get_next_task(context, max_tasks):
 def execute_next_task(task):
     payload = task.payload
     task.timestamp = time.time()
-    task.future.set_running_or_notify_cancel()
+    task.set_running_or_notify_cancel()
 
-    try:
-        results = payload.function(*payload.args, **payload.kwargs)
-    except BaseException as error:
-        error.traceback = format_exc()
-        task.future.set_exception(error)
+    result = execute(payload.function, *payload.args, **payload.kwargs)
+
+    if isinstance(result, BaseException):
+        task.future.set_exception(result)
     else:
-        task.future.set_result(results)
+        task.future.set_result(result)
+
+
+def process_chunk(function, chunk):
+    """Processes a chunk of the iterable passed to map dealing with errors."""
+    return [execute(function, *args) for args in chunk]
